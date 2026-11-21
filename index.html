@@ -666,7 +666,8 @@ const $ = (s, r=document) => r.querySelector(s);
 const el = (tag, attrs={}, html) => { const e=document.createElement(tag); for (const k in attrs){ if(k==="class") e.className=attrs[k]; else if(k.startsWith("on")) e.addEventListener(k.slice(2), attrs[k]); else e.setAttribute(k, attrs[k]); } if(html!==undefined) e.innerHTML=html; return e; };
 const LETTERS="ABCDEFGH";
 const store = { get(k,d){ try{ const v=localStorage.getItem("ecen427m2:"+k); return v?JSON.parse(v):d; }catch(e){ return d; } },
-                set(k,v){ try{ localStorage.setItem("ecen427m2:"+k, JSON.stringify(v)); }catch(e){} } };
+                set(k,v){ try{ localStorage.setItem("ecen427m2:"+k, JSON.stringify(v)); }catch(e){ } },
+                remove(k){ try{ localStorage.removeItem("ecen427m2:"+k); }catch(e){ } } };
 function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
 const sameSet=(a,b)=>a.length===b.length&&a.every(x=>b.includes(x));
 
@@ -746,8 +747,8 @@ function renderQuestion(q, num, mode, state){
       foot.style.display="none";
     }
   }
-  function grade(){ state.done=true; paint(); if(state.ongrade) state.ongrade(sameSet(state.sel,q.ans)); }
-  state.reveal=()=>{ state.done=true; paint(); };
+  function grade(){ state.done=true; paint(); if(state.ongrade) state.ongrade(sameSet(state.sel,q.ans)); if(state.onchange) state.onchange(); }
+  state.reveal=()=>{ state.done=true; paint(); if(state.onchange) state.onchange(); };
   paint();
   return box;
 }
@@ -755,7 +756,7 @@ function renderSA(q, box, mode, state){
   box.classList.add("sa");
   const w=el("div",{class:"wrap"});
   const ta=el("textarea",{id:"ta-"+q.id,"aria-label":"Your answer"});
-  ta.value=state.text||""; ta.addEventListener("input",()=>state.text=ta.value);
+  ta.value=state.text||""; ta.addEventListener("input",()=>{ state.text=ta.value; if(state.onchange) state.onchange(); });
   w.appendChild(ta);
   const out=el("div",{class:"exp"}); out.style.display="none";
   const foot=el("div",{class:"qfoot"});
@@ -775,7 +776,9 @@ function renderSA(q, box, mode, state){
       li.appendChild(cb); li.appendChild(el("label",{for:id},r)); ul.appendChild(li);
     });
     out.appendChild(ul);
+    if(state.onchange) state.onchange();
   };
+  if(state.done) state.reveal();
   return box;
 }
 
@@ -787,6 +790,7 @@ function practiceSet(container, questions, key){
   const score=el("span",{class:"score"});
   const list=el("div");
   const missed=new Set(store.get("missed:"+key,[]));
+  const savedAnswers=store.get("answers:"+key,{});
   let states={};
   const hasOrig=questions.some(q=>q.src&&q.src.startsWith("Quiz"));
   const seg=el("div",{class:"seg",role:"group","aria-label":"Which questions"});
@@ -796,7 +800,7 @@ function practiceSet(container, questions, key){
   const shuf=el("button",{type:"button",class:"btn"},"Shuffle choices");
   shuf.addEventListener("click",()=>{opts.shuffle=!opts.shuffle; draw();});
   bar.appendChild(shuf);
-  bar.appendChild(el("button",{type:"button",class:"btn",onclick:()=>draw()},"Reset"));
+  bar.appendChild(el("button",{type:"button",class:"btn",onclick:()=>{ Object.keys(savedAnswers).forEach(k=>delete savedAnswers[k]); store.remove("answers:"+key); store.remove("missed:"+key); missed.clear(); draw(); }},"Reset"));
   bar.appendChild(el("span",{class:"grow"}));
   bar.appendChild(score);
   container.appendChild(bar); container.appendChild(list);
@@ -807,7 +811,12 @@ function practiceSet(container, questions, key){
     let qs=questions.filter(q=> opts.filter==="all" || (opts.filter==="orig" && q.src && q.src.startsWith("Quiz")) || (opts.filter==="new" && !(q.src && q.src.startsWith("Quiz"))) || (opts.filter==="missed" && missed.has(q.id)));
     if(!qs.length){ list.appendChild(el("div",{class:"empty"}, opts.filter==="missed"?"Nothing missed here yet.":"No questions in this filter.")); }
     qs.forEach((q,i)=>{
-      const st={}; states[q.id]=st;
+      const st=savedAnswers[q.id] ? Object.assign({},savedAnswers[q.id]) : {};
+      states[q.id]=st;
+      st.onchange=()=>{
+        savedAnswers[q.id]={done:!!st.done,sel:st.sel||[],text:st.text||"",checks:st.checks||[],order:st.order||null};
+        store.set("answers:"+key,savedAnswers);
+      };
       if(opts.shuffle && q.type!=="sa" && !q.noshuffle) st.order=shuffle(q.choices.map((_,j)=>j));
       st.ongrade=ok=>{ if(ok) missed.delete(q.id); else missed.add(q.id); store.set("missed:"+key,[...missed]); tally(); };
       list.appendChild(renderQuestion(q,i+1,"practice",st));
@@ -916,20 +925,36 @@ function buildExam(which){
   const result=el("div"); const list=el("div");
   v.appendChild(bar); v.appendChild(result); v.appendChild(list);
   let states, t0, tick, submitted;
+  const savedKey="exam:"+which;
+  function persistExam(){
+    const savedStates={};
+    Object.entries(states||{}).forEach(([id,st])=>{
+      savedStates[id]={done:!!st.done,sel:st.sel||[],text:st.text||"",checks:st.checks||[]};
+    });
+    const elapsed=t0?Math.floor((Date.now()-t0)/1000):0;
+    store.set(savedKey,{submitted:!!submitted,elapsed,savedStates});
+  }
   function start(){
-    states={}; submitted=false; list.innerHTML=""; result.innerHTML=""; submit.style.display="";
+    const saved=store.get(savedKey,{});
+    states={}; submitted=!!saved.submitted; list.innerHTML=""; result.innerHTML=""; submit.style.display=submitted?"none":"";
     list.appendChild(el("h3",{style:"font-size:18px;margin:6px 0 10px"},"Part 1: Multiple choice"));
-    ex.mc.forEach((q,i)=>{ const st={}; states[q.id]=st; list.appendChild(renderQuestion(q,i+1,"exam",st)); });
+    ex.mc.forEach((q,i)=>{ const st=Object.assign({},saved.savedStates&&saved.savedStates[q.id]||{}); st.done=!!submitted; states[q.id]=st; st.onchange=persistExam; list.appendChild(renderQuestion(q,i+1,"exam",st)); });
     if(multi.length){
       list.appendChild(el("h3",{style:"font-size:18px;margin:20px 0 10px"},"Part 2: Select all that apply"));
-      multi.forEach((q,i)=>{ const st={}; states[q.id]=st; list.appendChild(renderQuestion(q,ex.mc.length+i+1,"exam",st)); });
+      multi.forEach((q,i)=>{ const st=Object.assign({},saved.savedStates&&saved.savedStates[q.id]||{}); st.done=!!submitted; states[q.id]=st; st.onchange=persistExam; list.appendChild(renderQuestion(q,ex.mc.length+i+1,"exam",st)); });
     }
     if(ex.sa.length){
       list.appendChild(el("h3",{style:"font-size:18px;margin:20px 0 10px"},`Part ${multi.length?3:2}: Short answer`));
-      ex.sa.forEach((q,i)=>{ const st={}; states[q.id]=st; st.onchange=()=>{ if(submitted) summarize(); }; list.appendChild(renderQuestion(q,ex.mc.length+multi.length+i+1,"exam",st)); });
+      ex.sa.forEach((q,i)=>{ const st=Object.assign({},saved.savedStates&&saved.savedStates[q.id]||{}); st.done=!!submitted; states[q.id]=st; st.onchange=()=>{ persistExam(); if(submitted) summarize(); }; list.appendChild(renderQuestion(q,ex.mc.length+multi.length+i+1,"exam",st)); });
     }
-    t0=Date.now(); clearInterval(tick);
-    tick=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); timer.textContent=String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); },1000);
+    t0=Date.now()-((saved.elapsed||0)*1000); clearInterval(tick);
+    const initialSeconds=saved.elapsed||0;
+    timer.textContent=String(Math.floor(initialSeconds/60)).padStart(2,"0")+":"+String(initialSeconds%60).padStart(2,"0");
+    if(!submitted){
+      tick=setInterval(()=>{ const s=Math.floor((Date.now()-t0)/1000); timer.textContent=String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0"); persistExam(); },1000);
+    }
+    if(submitted){ Object.values(states).forEach(st=>st.reveal&&st.reveal()); summarize(); }
+    persistExam();
   }
   function summarize(){
     const mcRight=ex.mc.filter(q=>sameSet(states[q.id].sel||[],q.ans)).length;
@@ -953,9 +978,10 @@ function buildExam(which){
   submit.addEventListener("click",()=>{
     if(submitted) return; submitted=true; clearInterval(tick);
     Object.values(states).forEach(st=>st.reveal&&st.reveal());
+    persistExam();
     submit.style.display="none"; summarize(); result.scrollIntoView({behavior:"smooth"});
   });
-  reset.addEventListener("click",start);
+  reset.addEventListener("click",()=>{ store.remove(savedKey); start(); });
   start();
 }
 
